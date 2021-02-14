@@ -68,6 +68,7 @@ class InfluenceWithSTest(object):
         self.inverse_hvps = {}
         self.test_gradients = {}
         self.influences_on_loss = {}
+        self.influences_on_prediction = {}
 
     def reshape_flat_vector(self, flat_vector):
         """Takes a flat vector and reshapes it to a tensor with the same shape as the model's trainable variables."""
@@ -144,8 +145,9 @@ class InfluenceWithSTest(object):
 
         return training_gradient
 
-    def get_inverse_hvp_cg(self, test_idx):
+    def get_inverse_hvp_cg(self, test_idx, what='loss'):
         """Calculates the inverse HVP using Conjugate Gradient method."""
+        assert what == 'loss'
 
         # Flattened test gradient used both for iteration, and as initial guess.
         flat_test_gradient = np.concatenate(
@@ -205,14 +207,14 @@ class InfluenceWithSTest(object):
 
         return result.x
 
-    def get_inverse_hvp_lissa(self, test_idx):
+    def get_inverse_hvp_lissa(self, test_idx, what='loss'):
         """Approximates the inverse HVP using LiSSA method."""
 
         if self.verbose:
             print("Calculating inverse HVP using LiSSA method:")
 
         flat_test_gradient = np.concatenate(
-            [tf.reshape(t, [-1]) for t in self.get_test_gradient(test_idx)]
+            [tf.reshape(t, [-1]) for t in self.get_test_gradient(test_idx, what=what)]
         )
 
         estimates = []
@@ -296,16 +298,16 @@ class InfluenceWithSTest(object):
 
         return inverse_hvp
 
-    def get_inverse_hvp(self, test_idx):
+    def get_inverse_hvp(self, test_idx, what='loss'):
         """Calculates the inverse HVP using the specified method."""
 
         if test_idx in self.inverse_hvps:
             return self.inverse_hvps[test_idx]
 
         if self.method == "cg":
-            inverse_hvp = self.get_inverse_hvp_cg(test_idx)
+            inverse_hvp = self.get_inverse_hvp_cg(test_idx, what=what)
         elif self.method == "lissa":
-            inverse_hvp = self.get_inverse_hvp_lissa(test_idx)
+            inverse_hvp = self.get_inverse_hvp_lissa(test_idx, what=what)
         else:
             raise ValueError(
                 "'"
@@ -317,18 +319,23 @@ class InfluenceWithSTest(object):
 
         return inverse_hvp
 
-    def get_test_gradient(self, test_idx):
+    def get_test_gradient(self, test_idx, what='loss'):
         """Calculates the gradient of loss at a test point w.r.t. trainable variables."""
 
         if test_idx in self.test_gradients:
             return self.test_gradients[test_idx]
 
         with tf.GradientTape() as tape:
-            predicted_label = self.model(np.array([self.test_inputs[test_idx]]))
-            loss = self.loss_fn(np.array([self.test_labels[test_idx]]), predicted_label) * self.scaling
+            if what == 'loss':
+                predicted_label = self.model(np.array([self.test_inputs[test_idx]]))
+                output = self.loss_fn(np.array([self.test_labels[test_idx]]), predicted_label) * self.scaling
+            elif what == 'prediction':
+                predicted_label = self.model(np.array([self.test_inputs[test_idx]]))
+                index = np.argmax(self.test_labels[test_idx])
+                output = predicted_label[0, index]
 
         test_gradient = tape.gradient(
-            loss,
+            output,
             self.parameters,
             unconnected_gradients=tf.UnconnectedGradients.ZERO,
         )
@@ -354,3 +361,22 @@ class InfluenceWithSTest(object):
         self.influences_on_loss[(training_idx, test_idx)] = influence_on_loss
 
         return influence_on_loss
+
+    def get_influence_on_prediction(self, training_idx, test_idx):
+        """Calculates the influence of the given training point at the given test point."""
+
+        if (training_idx, test_idx) in self.influences_on_prediction:
+            return self.influences_on_prediction[(training_idx, test_idx)]
+
+        training_gradient = self.get_training_gradient(training_idx)
+        flat_training_gradient = np.concatenate(
+            [tf.reshape(t, [-1]) for t in training_gradient]
+        )
+        influence_on_prediction = -np.dot(
+            self.get_inverse_hvp(test_idx, what='prediction'),
+            flat_training_gradient
+        )
+
+        self.influences_on_prediction[(training_idx, test_idx)] = influence_on_prediction
+
+        return influence_on_prediction

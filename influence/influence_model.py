@@ -120,6 +120,35 @@ class InfluenceModel(object):
 
         return hvp
 
+    def get_expected_gradient_len(self, training_idx, n_labels):
+        norms = []
+        for idx in range(n_labels):
+            putative_label = np.zeros(n_labels)
+            putative_label[idx] = 1
+
+            with tf.GradientTape() as tape:
+                predicted_label = self.model(
+                    np.array([self.training_inputs[training_idx]])
+                )
+                loss = (
+                    self.loss_fn(
+                        np.array([putative_label]), predicted_label
+                    )
+                )
+
+            gradient = tape.gradient(
+                loss,
+                self.parameters,
+                unconnected_gradients=tf.UnconnectedGradients.ZERO,
+            )
+
+            flat_gradient = np.concatenate(
+                [tf.reshape(t, [-1]) for t in gradient]
+            )
+            norms.append(np.dot(flat_gradient, flat_gradient))
+
+        return np.dot(predicted_label, np.array(norms))
+
     def get_training_gradient(self, training_idx):
         """Calculates the gradient of loss at an up-weighted training point w.r.t. trainable variables."""
 
@@ -206,8 +235,10 @@ class InfluenceModel(object):
 
         return result.x
 
-    def get_inverse_hvp_lissa(self, training_idx):
+    def get_inverse_hvp_lissa(self, training_idx, known=None):
         """Approximates the inverse HVP using LiSSA method."""
+        if known is None:
+            known = list(range(len(self.training_inputs)))
 
         if self.verbose:
             print("Calculating inverse HVP using LiSSA method:")
@@ -222,7 +253,7 @@ class InfluenceModel(object):
             current_estimate = self.get_training_gradient(training_idx)
 
             for j in range(self.lissa_depth):
-                sample_idx = np.random.choice(range(len(self.training_inputs)))
+                sample_idx = np.random.choice(known)
 
                 # Calculate HVP using back-over-back auto-diff.
                 with tf.GradientTape() as outer_tape:
@@ -299,6 +330,7 @@ class InfluenceModel(object):
 
     def get_inverse_hvp(self, training_idx):
         """Calculates the inverse HVP using the specified method."""
+        # Computes H^-1 ∇θ loss(ztrain, θt)
 
         if training_idx in self.inverse_hvps:
             return self.inverse_hvps[training_idx]
@@ -318,7 +350,7 @@ class InfluenceModel(object):
 
         return inverse_hvp
 
-    def get_test_gradient(self, test_idx):
+    def get_test_gradient(self, test_idx, what='loss'):
         """Calculates the gradient of loss at a test point w.r.t. trainable variables."""
 
         if test_idx in self.test_gradients:
@@ -326,10 +358,15 @@ class InfluenceModel(object):
 
         with tf.GradientTape() as tape:
             predicted_label = self.model(np.array([self.test_inputs[test_idx]]))
-            loss = self.loss_fn(np.array([self.test_labels[test_idx]]), predicted_label)
+            if what == 'loss':
+                output = self.loss_fn(np.array([self.test_labels[test_idx]]), predicted_label)
+            elif what == 'prediction':
+                output = predicted_label[0, np.argmax(self.test_labels[test_idx])]
+            else:
+                raise ValueError(f'{what} is invalid')
 
         test_gradient = tape.gradient(
-            loss,
+            output,
             self.parameters,
             unconnected_gradients=tf.UnconnectedGradients.ZERO,
         )
@@ -344,13 +381,39 @@ class InfluenceModel(object):
         if (training_idx, test_idx) in self.influences_on_loss:
             return self.influences_on_loss[(training_idx, test_idx)]
 
+        # ∇θ loss(ztest, θt)
         test_gradient = self.get_test_gradient(test_idx)
         flat_test_gradient = np.concatenate(
             [tf.reshape(t, [-1]) for t in test_gradient]
         )
-        influence_on_loss = -np.dot(
-            self.get_inverse_hvp(training_idx), flat_test_gradient
+
+        # H^-1 ∇θ loss(ztrain, θt)
+        inverse_hvp = self.get_inverse_hvp(training_idx)
+
+        # - ∇θ loss(ztest, θt) * -H^-1 ∇θ loss(ztrain, θt)
+        influence_on_loss = -np.dot(inverse_hvp, flat_test_gradient)
+
+        self.influences_on_loss[(training_idx, test_idx)] = influence_on_loss
+
+        return influence_on_loss
+
+    def get_influence_on_prediction(self, training_idx, test_idx):
+        """Calculates the influence of the given training point at the given test point."""
+
+        if (training_idx, test_idx) in self.influences_on_loss:
+            return self.influences_on_loss[(training_idx, test_idx)]
+
+        # ∇θ s(ztest; θt)
+        test_gradient = self.get_test_gradient(test_idx, what='prediction')
+        flat_test_gradient = np.concatenate(
+            [tf.reshape(t, [-1]) for t in test_gradient]
         )
+
+        # H^-1 ∇θ loss(ztrain, θt)
+        inverse_hvp = self.get_inverse_hvp(training_idx)
+
+        # - ∇θ loss(ztest, θt) * -H^-1 ∇θ loss(ztrain, θt)
+        influence_on_loss = -np.dot(inverse_hvp, flat_test_gradient)
 
         self.influences_on_loss[(training_idx, test_idx)] = influence_on_loss
 
@@ -360,6 +423,16 @@ class InfluenceModel(object):
         """Calculates the theta-relative influence of the given training point at the given test point."""
 
         influence_on_loss = self.get_influence_on_loss(training_idx, test_idx)
+        theta_relatif = influence_on_loss / np.linalg.norm(
+            self.get_inverse_hvp(training_idx)
+        )
+
+        return theta_relatif
+
+    def get_theta_relatif_on_prediction(self, training_idx, test_idx):
+        """Calculates the theta-relative influence of the given training point at the given test point."""
+
+        influence_on_loss = self.get_influence_on_prediction(training_idx, test_idx)
         theta_relatif = influence_on_loss / np.linalg.norm(
             self.get_inverse_hvp(training_idx)
         )
