@@ -174,8 +174,9 @@ class InfluenceModel(object):
 
         return training_gradient
 
-    def get_inverse_hvp_cg(self, training_idx):
+    def get_inverse_hvp_cg(self, training_idx, known=None):
         """Calculates the inverse HVP using Conjugate Gradient method."""
+        assert known is None
 
         # Flattened training gradient used both for iteration, and as initial guess.
         flat_training_gradient = np.concatenate(
@@ -328,7 +329,7 @@ class InfluenceModel(object):
 
         return inverse_hvp
 
-    def get_inverse_hvp(self, training_idx):
+    def get_inverse_hvp(self, training_idx, known=None):
         """Calculates the inverse HVP using the specified method."""
         # Computes H^-1 ∇θ loss(ztrain, θt)
 
@@ -336,9 +337,9 @@ class InfluenceModel(object):
             return self.inverse_hvps[training_idx]
 
         if self.method == "cg":
-            inverse_hvp = self.get_inverse_hvp_cg(training_idx)
+            inverse_hvp = self.get_inverse_hvp_cg(training_idx, known=known)
         elif self.method == "lissa":
-            inverse_hvp = self.get_inverse_hvp_lissa(training_idx)
+            inverse_hvp = self.get_inverse_hvp_lissa(training_idx, known=known)
         else:
             raise ValueError(
                 "'"
@@ -375,7 +376,7 @@ class InfluenceModel(object):
 
         return test_gradient
 
-    def get_influence_on_loss(self, training_idx, test_idx):
+    def get_influence_on_loss(self, training_idx, test_idx, known=None):
         """Calculates the influence of the given training point at the given test point."""
 
         if (training_idx, test_idx) in self.influences_on_loss:
@@ -388,7 +389,7 @@ class InfluenceModel(object):
         )
 
         # H^-1 ∇θ loss(ztrain, θt)
-        inverse_hvp = self.get_inverse_hvp(training_idx)
+        inverse_hvp = self.get_inverse_hvp(training_idx, known=known)
 
         # - ∇θ loss(ztest, θt) * -H^-1 ∇θ loss(ztrain, θt)
         influence_on_loss = -np.dot(inverse_hvp, flat_test_gradient)
@@ -397,7 +398,7 @@ class InfluenceModel(object):
 
         return influence_on_loss
 
-    def get_influence_on_prediction(self, training_idx, test_idx):
+    def get_influence_on_prediction(self, training_idx, test_idx, known=None):
         """Calculates the influence of the given training point at the given test point."""
 
         if (training_idx, test_idx) in self.influences_on_loss:
@@ -410,7 +411,7 @@ class InfluenceModel(object):
         )
 
         # H^-1 ∇θ loss(ztrain, θt)
-        inverse_hvp = self.get_inverse_hvp(training_idx)
+        inverse_hvp = self.get_inverse_hvp(training_idx, known=known)
 
         # - ∇θ loss(ztest, θt) * -H^-1 ∇θ loss(ztrain, θt)
         influence_on_loss = -np.dot(inverse_hvp, flat_test_gradient)
