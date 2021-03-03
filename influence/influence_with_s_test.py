@@ -269,7 +269,7 @@ class InfluenceWithSTest(object):
             if self.verbose:
                 current_hvp = self.get_hvp(current_estimate)
                 flat_hvp = np.concatenate([tf.reshape(t, [-1]) for t in current_hvp])
-                distance = np.linalg.norm(flat_hvp - flat_training_gradient)
+                distance = np.linalg.norm(flat_hvp - flat_test_gradient)
                 print(
                     "Sample",
                     i + 1,
